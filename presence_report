@@ -1,5 +1,8 @@
 #!/bin/sh
 
+# Reset in case getopts has been used previously in the shell.
+OPTIND=1
+
 DEFAULT_MODE="event"
 DEFAULT_MQTT_SERVER="10.1.1.50"
 DEFAULT_LAST_SEEN_UPDATE_PERIOD_S=120
@@ -14,6 +17,7 @@ MQTT_TOPIC="owrtwifi/status/mac-"
 
 SCRIPT_NAME="$(basename "$(test -L "$0" && readlink "$0" || echo "$0")")"
 
+DEPENDENCIES="iw mosquitto_pub"
 
 # Parse command line args
 test_for_mode(){
@@ -60,6 +64,46 @@ Examples:
 EOF
 }
 
+read_event(){
+  while true; do
+    IFS=' ' read IFACE EVENT STAT MAC
+    if [ $EVENT == "new" -o $EVENT == "del" ]; then
+      echo "Mac: $MAC did $EVENT"
+      mosquitto_pub -h $MQTT_SERVER -i $MQTT_ID_EVENT -t "$MQTT_TOPIC${MAC//:/-}/event" -m $EVENT
+    fi
+  done
+}
+
+# Parse passed options
+while getopts "h?c:" opt; do
+  case "$opt" in
+    h|\?)
+      print_usage
+      exit 0
+      ;;
+    c)
+      if [ -f $OPTARG ]; then
+        . `readlink -f $OPTARG`
+      else
+        echo "Error: config $OPTARG not found!" && exit 1
+      fi
+      ;;
+  esac
+done
+
+shift $((OPTIND-1))
+
+[ "${1:-}" = "--" ] && shift
+
+# check for dependencies
+for DEP in $DEPENDENCIES; do
+  which $DEP > /dev/null
+  if [ $? -ne 0 ]; then
+    echo "Error: $DEP not found!" && exit 1
+  fi
+done
+
+# Assume that the rest is parameters as input, backward-compatible
 for param in "$@"; do
   test_for_mode $param || \
   test_for_ipv4 $param || \
@@ -67,19 +111,10 @@ for param in "$@"; do
   { print_usage; exit 1; }
 done
 
-
 if [ "$MODE" == "event" ]; then
   echo "$SCRIPT_NAME, mode: $MODE, MQTT server: $MQTT_SERVER"
-  iw event | \
-  while read LINE; do
-    if echo $LINE | grep -q -E "(new|del) station"; then
-      EVENT=`echo $LINE | awk '/(new|del) station/ {print $2}'`
-      MAC=`echo $LINE | awk '/(new|del) station/ {print $4}'`
+  iw event | read_event
 
-      echo "Mac: $MAC did $EVENT"
-      mosquitto_pub -h $MQTT_SERVER -i $MQTT_ID_EVENT -t "$MQTT_TOPIC${MAC//:/-}/event" -m $EVENT
-    fi
-  done
 elif [ "$MODE" == "lastseen" ]; then
   echo "$SCRIPT_NAME, mode: $MODE, MQTT server: $MQTT_SERVER, period: $LAST_SEEN_UPDATE_PERIOD_S"
   while true
