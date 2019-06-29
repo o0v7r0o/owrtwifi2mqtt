@@ -13,7 +13,11 @@ LAST_SEEN_UPDATE_PERIOD_S=$DEFAULT_LAST_SEEN_UPDATE_PERIOD_S
 
 MQTT_ID_EVENT="OpenWRT-Presence-Event"
 MQTT_ID_LASTSEEN="OpenWRT-Presence-LastSeen"
+MQTT_ID_LOCATION="OpenWRT-Presence-Location"
 MQTT_TOPIC="owrtwifi/status/mac-"
+
+MQTT_LOCATION_NEW="home"
+MQTT_LOCATION_DEL="not_home"
 
 SCRIPT_NAME="$(basename "$(test -L "$0" && readlink "$0" || echo "$0")")"
 
@@ -22,7 +26,7 @@ DEPENDENCIES="iw mosquitto_pub"
 # Parse command line args
 test_for_mode(){
   param_mode=$1
-  if [ "$param_mode" == "event" -o "$param_mode" == "lastseen" ]; then
+  if [ "$param_mode" == "event" -o "$param_mode" == "lastseen" -o "$param_mode" == "location"]; then
     MODE=$param_mode
     return 0
   fi
@@ -52,7 +56,7 @@ test_for_update_periode_s(){
 print_usage(){
 cat << EOF
 Supported optional parameters:
-  mode: "event" or "lastseen" (default: $DEFAULT_MODE)
+  mode: "event", "lastseen" or "location" (default: $DEFAULT_MODE)
     In event mode changes of registered mac addresses are imediately pushed to the MQTT server
     In lastseen mode the registered mac addresses are periodically pushed to the MQTT server
   MQTT server IP: the IPv4 address of the MQTT server (default $DEFAULT_MQTT_SERVER)
@@ -67,11 +71,21 @@ EOF
 read_event(){
   while true; do
     IFS=' ' read IFACE EVENT STAT MAC
-    if [ $EVENT == "new" -o $EVENT == "del" ]; then
+    if [ "$EVENT" == "new" -o "$EVENT" == "del" ]; then
       echo "Mac: $MAC did $EVENT"
-      mosquitto_pub -h $MQTT_SERVER -i $MQTT_ID_EVENT -t "$MQTT_TOPIC${MAC//:/-}/event" -m $EVENT
+      if [ "$MODE" == "event" ]; then
+        mosquitto_pub -h $MQTT_SERVER -i $MQTT_ID_EVENT -t "$MQTT_TOPIC${MAC//:/-}/event" -m $EVENT
+      elif [ "$MODE" == "location" -a "$EVENT" == "new" ]; then
+        mosquitto_pub -h $MQTT_SERVER -i $MQTT_ID_LOCATION -t "$MQTT_TOPIC${MAC//:/-}/location" -m $MQTT_LOCATION_NEW
+      elif [ "$MODE" == "location" -a "$EVENT" == "del" ]; then
+        mosquitto_pub -h $MQTT_SERVER -i $MQTT_ID_LOCATION -t "$MQTT_TOPIC${MAC//:/-}/location" -m $MQTT_LOCATION_DEL
+      fi
     fi
   done
+}
+
+update_interface_list(){
+  interface_list=`iw dev | grep Interface | cut -f 2 -s -d" "`
 }
 
 # Parse passed options
@@ -111,7 +125,7 @@ for param in "$@"; do
   { print_usage; exit 1; }
 done
 
-if [ "$MODE" == "event" ]; then
+if [ "$MODE" == "event" -o "$MODE" == "location" ]; then
   echo "$SCRIPT_NAME, mode: $MODE, MQTT server: $MQTT_SERVER"
   iw event | read_event
 
@@ -119,7 +133,8 @@ elif [ "$MODE" == "lastseen" ]; then
   echo "$SCRIPT_NAME, mode: $MODE, MQTT server: $MQTT_SERVER, period: $LAST_SEEN_UPDATE_PERIOD_S"
   while true
   do
-    for interface in `iw dev | grep Interface | cut -f 2 -s -d" "`
+    update_interface_list
+    for interface in interface_list
     do
       # for each interface, get mac addresses of connected stations/clients
       maclist=`iw dev $interface station dump | grep Station | cut -f 2 -s -d" "` 
@@ -133,4 +148,5 @@ elif [ "$MODE" == "lastseen" ]; then
     done
     sleep ${LAST_SEEN_UPDATE_PERIOD_S}
   done
+
 fi
